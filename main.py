@@ -1,10 +1,11 @@
 import os
+import re
 import time
 import requests
 import feedparser
 from bs4 import BeautifulSoup
+from deep_translator import GoogleTranslator
 
-# دریافت متغیرهای محیطی از گیت‌هاب
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
@@ -16,7 +17,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# منابع اصلی اخبار زنده جهان
 ENGLISH_RSS_SOURCES = [
     "https://www.forexlive.com/feed/news",
     "https://www.dailyfx.com/feeds/forex-market-news",
@@ -28,13 +28,20 @@ IGNORE_KEYWORDS = [
     "tmgm", "top 10", "learn to trade", "strategy", "promo"
 ]
 
+# مدل ارشد تعیین‌شده توسط شما و مدل‌های رزرو Groq
+GROQ_MODELS = [
+    "openai/gpt-oss-120b",
+    "openai/gpt-oss-20b",
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant"
+]
+
 def clean_html(raw_html):
     if not raw_html:
         return ""
     soup = BeautifulSoup(raw_html, "html.parser")
     return soup.get_text(separator=" ").strip()
 
-# استخراج متن خبر انگلیسی
 def get_full_text(entry):
     raw_content = ""
     if hasattr(entry, 'content') and len(entry.content) > 0:
@@ -60,7 +67,27 @@ def get_full_text(entry):
 
     return text.rstrip(".… ")
 
-# خلاصه سازی و روان‌سازی خبر توسط Groq API
+translator = GoogleTranslator(source='auto', target='fa')
+
+def translate_sentence_by_sentence(text_en):
+    sentences = re.split(r'(?<=[.!?])\s+', text_en)
+    translated_sentences = []
+    for sent in sentences:
+        sent = sent.strip()
+        if len(sent) < 12:
+            continue
+        try:
+            translated = translator.translate(sent)
+            if translated and not translated.endswith("..."):
+                translated_sentences.append(translated)
+        except:
+            pass
+    full_persian = " ".join(translated_sentences)
+    if full_persian and not full_persian.endswith((".", "!", "؟")):
+        full_persian += "."
+    return full_persian
+
+# خلاصه سازی و بازنویسی با مدل openai/gpt-oss-120b در Groq
 def summarize_and_translate_with_groq(title, content):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -88,25 +115,35 @@ def summarize_and_translate_with_groq(title, content):
 [متن خلاصه و جذاب فارسی]
 """
 
-    payload = {
-        "model": "llama-3.3-70b-versatile",
-        "messages": [
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.4
-    }
+    for model_name in GROQ_MODELS:
+        payload = {
+            "model": model_name,
+            "messages": [
+                {"role": "user", "content": prompt}
+            ],
+            "temperature": 0.4
+        }
 
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=15)
+            if res.status_code == 200:
+                result = res.json()
+                print(f"پاسخ موفقیت‌آمیز از مدل ({model_name}) دریافت شد.")
+                return result["choices"][0]["message"]["content"].strip()
+            else:
+                print(f"مدل {model_name} پاسخ نداد (کد {res.status_code})، تست مدل بعدی...")
+        except Exception as e:
+            print(f"خطا در مدل {model_name}: {e}")
+
+    # در صورت عدم پاسخ‌گویی Groq، استفاده از مترجم پشتیبان
+    print("استفاده از سیستم ترجمه پشتیبان...")
     try:
-        res = requests.post(url, headers=headers, json=payload, timeout=20)
-        if res.status_code == 200:
-            result = res.json()
-            return result["choices"][0]["message"]["content"].strip()
-        else:
-            print(f"خطای Groq API: {res.text}")
+        title_fa = translator.translate(title)
+        body_fa = translate_sentence_by_sentence(content)
+        return f"📌 **عنوان:**\n{title_fa}\n\n📝 **خلاصه خبر:**\n{body_fa}"
     except Exception as e:
-        print(f"استثنا در ارتباط با Groq: {e}")
-
-    return None
+        print("خطا در مترجم پشتیبان:", e)
+        return None
 
 entries_to_process = []
 
