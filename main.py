@@ -15,31 +15,61 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# منابع اصلی اخبار زنده بازار فارکس
 RSS_SOURCES = [
     "https://www.forexlive.com/feed/news",
     "https://www.dailyfx.com/feeds/forex-market-news",
     "https://news.google.com/rss/search?q=EURUSD+OR+GBPUSD+OR+USDJPY+OR+Fed+OR+Forex+market&hl=en-US&gl=US&ceid=US:en"
 ]
 
-# کلمات کلیدی برای حذف اخبار آموزشی و تبلیغاتی
 IGNORE_KEYWORDS = [
     "how to", "best time", "what is", "guide", "tutorial", "broker", 
     "tmgm", "top 10", "learn to trade", "strategy", "آموزش", "بهترین زمان"
 ]
 
-# پاک‌سازی کدهای HTML
+# تابع پاک‌سازی کدهای HTML
 def clean_html(raw_html):
     if not raw_html:
         return ""
     soup = BeautifulSoup(raw_html, "html.parser")
     return soup.get_text(separator=" ").strip()
 
+# تابع استخراج متن کامل خبر (حتی اگر در RSS ناقص باشد)
+def get_full_article_text(entry):
+    raw_content = ""
+    if hasattr(entry, 'content') and len(entry.content) > 0:
+        raw_content = entry.content[0].value
+    elif hasattr(entry, 'summary'):
+        raw_content = entry.summary
+    elif hasattr(entry, 'description'):
+        raw_content = entry.description
+
+    text = clean_html(raw_content)
+
+    # اگر متن به ... ختم شده یا بسیار کوتاه باشد، صفحه اصلی خبر را باز کن و متن کامل را بخوان
+    if (text.endswith("...") or text.endswith("…") or len(text) < 200) and hasattr(entry, 'link'):
+        try:
+            res = requests.get(entry.link, headers=HEADERS, timeout=6, allow_redirects=True)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.content, "html.parser")
+                paragraphs = soup.find_all("p")
+                p_texts = [p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 35]
+                if p_texts:
+                    # ترکیب پاراگراف‌ها برای ساخت خبر کاملاً کامل
+                    scraped_text = " ".join(p_texts[:5])
+                    if len(scraped_text) > len(text):
+                        text = scraped_text
+        except Exception as e:
+            print(f"امکان دریافت صفحه کامل نبود، استفاده از متن موجود: {e}")
+
+    # پاک کردن سه نقطه احتمالی از انتهای متن
+    text = text.rstrip(".… ")
+    return text
+
 translator = GoogleTranslator(source='auto', target='fa')
 
 entries_to_process = []
 
-# جمع‌آوری ۱۰ خبر واقعی فارکس
+# دریافت ۱۰ خبر واقعی
 for url in RSS_SOURCES:
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
@@ -48,11 +78,9 @@ for url in RSS_SOURCES:
             for entry in feed.entries:
                 title_lower = entry.title.lower()
                 
-                # فیلتر مطالب آموزشی و تبلیغاتی
                 if any(kw in title_lower for kw in IGNORE_KEYWORDS):
                     continue
                 
-                # جلوگیری از خبر تکراری
                 if not any(e.title == entry.title for e in entries_to_process):
                     entries_to_process.append(entry)
                 
@@ -66,26 +94,26 @@ for url in RSS_SOURCES:
 
 print(f"تعداد {len(entries_to_process)} خبر پیدا شد.")
 
-# ارسال ۱۰ خبر به صورت متنی و کامل
+# ترجمه و ارسال اخبار کامل
 for idx, entry in enumerate(entries_to_process[:10], 1):
     title_en = entry.title
-    summary_raw = getattr(entry, 'summary', title_en)
-    summary_clean = clean_html(summary_raw)
+    full_text_en = get_full_article_text(entry)
 
-    # اجازه دادن به متن‌های کامل‌تر (تا ۸۰۰ کاراکتر)
-    if len(summary_clean) > 800:
-        summary_clean = summary_clean[:800] + "..."
+    # کنترل سقف استاندارد تلگرام (تا ۲۵۰۰ کاراکتر)
+    if len(full_text_en) > 2500:
+        full_text_en = full_text_en[:2500]
 
-    # ترجمه عنوان و متن به فارسی
+    # ترجمه عنوان و متن کامل خبر
     try:
         title_fa = translator.translate(title_en)
-        summary_fa = translator.translate(summary_clean) if summary_clean and summary_clean != title_en else title_fa
+        summary_fa = translator.translate(full_text_en) if full_text_en else title_fa
     except Exception as e:
+        print(f"خطا در ترجمه خبر {idx}: {e}")
         title_fa = title_en
-        summary_fa = summary_clean
+        summary_fa = full_text_en
 
-    # ساخت متن فارسی متنی و کامل بدون عکس، لینک و منبع
-    message = f"📊 **خبر فارکس ({idx}/10)**\n\n📌 **عنوان:**\n{title_fa}\n\n📝 **متن خبر:**\n{summary_fa}"
+    # ساخت قالب پیام نهایی و کامل
+    message = f"📊 **خبر فارکس ({idx}/10)**\n\n📌 **عنوان:**\n{title_fa}\n\n📝 **متن کامل خبر:**\n{summary_fa}"
 
     telegram_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
@@ -96,10 +124,9 @@ for idx, entry in enumerate(entries_to_process[:10], 1):
 
     res = requests.post(telegram_url, data=payload)
     
-    # ارسال بدون مارک‌داون در صورت بروز خطای تلگرام
     if res.status_code != 200:
         payload.pop("parse_mode", None)
         requests.post(telegram_url, data=payload)
 
-    print(f"خبر شماره {idx} ارسال شد.")
-    time.sleep(2) # وقفه ۲ ثانیه‌ای بین ارسال‌ها
+    print(f"خبر شماره {idx} با موفقیت ارسال شد.")
+    time.sleep(2) # وقفه بین ارسال‌ها
