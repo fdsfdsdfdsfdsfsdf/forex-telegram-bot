@@ -18,10 +18,11 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install requests feedparser deep-translator beautifulsoup4
+        run: pip install requests feedparser beautifulsoup4
 
       - name: Run Script
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python main.py
