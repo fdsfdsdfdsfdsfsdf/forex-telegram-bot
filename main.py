@@ -33,13 +33,14 @@ def clean_html(raw_html):
     soup = BeautifulSoup(raw_html, "html.parser")
     return soup.get_text(separator=" ").strip()
 
-# پاک‌سازی اسم منابع، لینک‌ها و سایت‌ها
-def clean_sources(text):
+# پاک‌سازی کامل برندها، منابع و لینک‌ها
+def clean_sources_and_brands(text):
     if not text:
         return ""
     patterns = [
         r'\(?\s*(منبع|خبرگزاری|سایت|Reuters|Bloomberg|ForexLive|DailyFX|Google News|رویترز|بلومبرگ|فارکس لایو)\s*:[^\)]*\)?',
         r'-\s*(ForexLive|DailyFX|Bloomberg|Reuters|Google News|رویترز|بلومبرگ|فارکس لایو).*$',
+        r'\(Reuters\)|\(Bloomberg\)|\(ForexLive\)|\(DailyFX\)',
         r'منبع:\s*.*$',
         r'http[s]?://\S+'
     ]
@@ -47,8 +48,8 @@ def clean_sources(text):
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
     return text.strip()
 
-# استخراج «لید خبر» (۲ یا ۳ جمله اول مقاله که اصل خلاصه خبر است)
-def extract_lead_summary(entry):
+# خلاصه‌سازی فوق‌العاده چابک انگلیسی (استخراج دقیق ۲ جمله اول یا حداکثر ۴۰ کلمه)
+def extract_ultra_short_english_summary(entry):
     raw_content = ""
     if hasattr(entry, 'summary'):
         raw_content = entry.summary
@@ -57,8 +58,7 @@ def extract_lead_summary(entry):
 
     text = clean_html(raw_content)
 
-    # اگر فید کوتاهی داد، پاراگراف اول صفحه اصلی خبر را بردار
-    if len(text) < 100 and hasattr(entry, 'link'):
+    if len(text) < 80 and hasattr(entry, 'link'):
         try:
             res = requests.get(entry.link, headers=HEADERS, timeout=6)
             if res.status_code == 200:
@@ -67,14 +67,22 @@ def extract_lead_summary(entry):
                 p_texts = [p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 30]
                 if p_texts:
                     text = p_texts[0]
-        except Exception as e:
+        except:
             pass
 
-    # جدا کردن ۲ تا ۳ جمله اول (اصل خلاصه خبر)
+    # پاک‌سازی منابع از متن انگلیسی قبل از خلاصه کردن
+    text = clean_sources_and_brands(text)
+
+    # جدا کردن دقیق ۲ جمله اول برای خلاصه بودن
     sentences = re.split(r'(?<=[.!?])\s+', text)
-    lead_sentences = sentences[:3]
-    summary_en = " ".join(lead_sentences).strip()
-    
+    short_sentences = sentences[:2]
+    summary_en = " ".join(short_sentences).strip()
+
+    # سقف مجاز ۴۰ کلمه‌ای برای بسیار خلاصه شدن
+    words = summary_en.split()
+    if len(words) > 40:
+        summary_en = " ".join(words[:40]) + "."
+
     return summary_en
 
 translator = GoogleTranslator(source='auto', target='fa')
@@ -103,20 +111,23 @@ for url in ENGLISH_RSS_SOURCES:
 
 print(f"تعداد {len(entries_to_process)} خبر برتر پیدا شد.")
 
-# ترجمه لید خبرها به فارسی و ارسال
+# خلاصه‌سازی و ترجمه
 for idx, entry in enumerate(entries_to_process[:10], 1):
     title_en = entry.title
-    lead_summary_en = extract_lead_summary(entry)
+    
+    # ۱. خلاصه‌سازی فشرده در پایتون (بدون هوش مصنوعی)
+    short_en_summary = extract_ultra_short_english_summary(entry)
 
+    # ۲. ترجمه حرفه‌ای و رایگان با GoogleTranslator
     try:
-        title_fa = translator.translate(title_en)
-        summary_fa = translator.translate(lead_summary_en)
+        title_fa = translator.translate(clean_sources_and_brands(title_en))
+        summary_fa = translator.translate(short_en_summary)
     except Exception as e:
         print(f"خطا در ترجمه خبر {idx}: {e}")
         continue
 
-    title_fa = clean_sources(title_fa)
-    summary_fa = clean_sources(summary_fa)
+    title_fa = clean_sources_and_brands(title_fa)
+    summary_fa = clean_sources_and_brands(summary_fa)
 
     if not summary_fa.endswith((".", "!", "؟")):
         summary_fa += "."
