@@ -2,9 +2,8 @@ name: Forex Auto News
 
 on:
   schedule:
-    # اجرا هر ۶ ساعت یک‌بار
     - cron: '0 */6 * * *'
-  workflow_dispatch: # امکان اجرای دستی با دکمه
+  workflow_dispatch:
 
 jobs:
   send-news:
@@ -19,7 +18,7 @@ jobs:
           python-version: '3.10'
 
       - name: Install Dependencies
-        run: pip install requests feedparser deep-translator
+        run: pip install requests feedparser deep-translator beautifulsoup4
 
       - name: Run Script
         env:
