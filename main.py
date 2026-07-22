@@ -4,6 +4,7 @@ import time
 import requests
 import feedparser
 from bs4 import BeautifulSoup
+from deep_translator import GoogleTranslator
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
@@ -27,11 +28,11 @@ IGNORE_KEYWORDS = [
     "tmgm", "top 10", "learn to trade", "strategy", "promo"
 ]
 
+# مدل‌های عمومی و آزاد Groq
 GROQ_MODELS = [
-    "openai/gpt-oss-120b",
-    "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "mixtral-8x7b-32768"
+    "llama3-8b-8192",
+    "openai/gpt-oss-20b"
 ]
 
 def clean_html(raw_html):
@@ -53,6 +54,27 @@ def clean_sources(text):
     for pattern in patterns:
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
     return text.strip()
+
+translator = GoogleTranslator(source='auto', target='fa')
+
+# مترجم پشتیبان پایتون در صورت عدم پاسخگویی هوش مصنوعی
+def translate_sentence_by_sentence(text_en):
+    sentences = re.split(r'(?<=[.!?])\s+', text_en)
+    translated_sentences = []
+    for sent in sentences:
+        sent = sent.strip()
+        if len(sent) < 12:
+            continue
+        try:
+            translated = translator.translate(sent)
+            if translated and not translated.endswith("..."):
+                translated_sentences.append(translated)
+        except:
+            pass
+    full_persian = " ".join(translated_sentences[:3]) # حداکثر ۳ جمله
+    if full_persian and not full_persian.endswith((".", "!", "؟")):
+        full_persian += "."
+    return full_persian
 
 def get_full_text(entry):
     raw_content = ""
@@ -79,8 +101,8 @@ def get_full_text(entry):
 
     return text.rstrip(".… ")
 
-# بازنویسی در حد یک پاراگراف روان توسط هوش مصنوعی
-def generate_one_paragraph_news_with_groq(title, content):
+# پردازش هوش مصنوعی + پشتیبان خودکار
+def generate_one_paragraph_news(title, content):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
@@ -108,6 +130,7 @@ def generate_one_paragraph_news_with_groq(title, content):
 [یک پاراگراف کامل، روان و جذاب فارسی]
 """
 
+    # تست مدل‌های Groq
     for model_name in GROQ_MODELS:
         payload = {
             "model": model_name,
@@ -115,21 +138,31 @@ def generate_one_paragraph_news_with_groq(title, content):
                 {"role": "user", "content": prompt}
             ],
             "temperature": 0.4,
-            "max_tokens": 350 # اندازه ایده‌آل برای دقیقاً ۱ پاراگراف
+            "max_tokens": 350
         }
 
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=15)
+            res = requests.post(url, headers=headers, json=payload, timeout=12)
             if res.status_code == 200:
                 result = res.json()
                 output = result["choices"][0]["message"]["content"].strip()
+                print(f"خبر با مدل {model_name} پردازش شد.")
                 return clean_sources(output)
             else:
                 print(f"مدل {model_name} پاسخ نداد (کد {res.status_code})")
         except Exception as e:
             print(f"خطا در مدل {model_name}: {e}")
 
-    return None
+    # در صورت عدم پاسخگویی Groq، استفاده از سیستم پشتیبان
+    print("استفاده از سیستم پشتیبان ترجمه...")
+    try:
+        title_fa = translator.translate(title)
+        body_fa = translate_sentence_by_sentence(content)
+        fallback_text = f"📌 **عنوان:**\n{title_fa}\n\n📝 **خلاصه خبر:**\n{body_fa}"
+        return clean_sources(fallback_text)
+    except Exception as e:
+        print("خطا در سیستم پشتیبان:", e)
+        return None
 
 entries_to_process = []
 
@@ -160,7 +193,7 @@ for idx, entry in enumerate(entries_to_process[:10], 1):
     title_en = entry.title
     full_text_en = get_full_text(entry)
 
-    persian_news = generate_one_paragraph_news_with_groq(title_en, full_text_en)
+    persian_news = generate_one_paragraph_news(title_en, full_text_en)
 
     if not persian_news:
         print(f"خبر {idx} پردازش نشد...")
