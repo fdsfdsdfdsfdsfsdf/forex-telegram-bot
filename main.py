@@ -22,13 +22,13 @@ RSS_SOURCES = [
     "https://news.google.com/rss/search?q=EURUSD+OR+GBPUSD+OR+USDJPY+OR+Fed+OR+Forex+market&hl=en-US&gl=US&ceid=US:en"
 ]
 
-# کلمات کلیدی برای حذف اخبار آموزشی و تبلیغاتی بروکرها
+# کلمات کلیدی برای حذف اخبار آموزشی و تبلیغاتی
 IGNORE_KEYWORDS = [
     "how to", "best time", "what is", "guide", "tutorial", "broker", 
     "tmgm", "top 10", "learn to trade", "strategy", "آموزش", "بهترین زمان"
 ]
 
-# تابع پاک‌سازی کدهای HTML
+# پاک‌سازی کدهای HTML
 def clean_html(raw_html):
     if not raw_html:
         return ""
@@ -39,7 +39,7 @@ translator = GoogleTranslator(source='auto', target='fa')
 
 entries_to_process = []
 
-# جمع‌آوری ۱۰ خبر واقعی و بروز بازار
+# جمع‌آوری ۱۰ خبر واقعی فارکس
 for url in RSS_SOURCES:
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
@@ -48,11 +48,11 @@ for url in RSS_SOURCES:
             for entry in feed.entries:
                 title_lower = entry.title.lower()
                 
-                # فیلتر کردن کارهای آموزشی و تبلیغاتی
+                # فیلتر مطالب آموزشی و تبلیغاتی
                 if any(kw in title_lower for kw in IGNORE_KEYWORDS):
                     continue
                 
-                # جلوگیری از ارسال خبر تکراری
+                # جلوگیری از خبر تکراری
                 if not any(e.title == entry.title for e in entries_to_process):
                     entries_to_process.append(entry)
                 
@@ -64,20 +64,19 @@ for url in RSS_SOURCES:
     if len(entries_to_process) >= 10:
         break
 
-print(f"تعداد {len(entries_to_process)} خبر واقعی فارکس پیدا شد.")
+print(f"تعداد {len(entries_to_process)} خبر پیدا شد.")
 
-image_url = "https://images.unsplash.com/photo-1611974789855-9c2a0a7236a3?q=80&w=1000&auto=format&fit=crop"
-
-# ارسال ۱۰ خبر به صورت جداگانه
+# ارسال ۱۰ خبر به صورت متنی و کامل
 for idx, entry in enumerate(entries_to_process[:10], 1):
     title_en = entry.title
     summary_raw = getattr(entry, 'summary', title_en)
     summary_clean = clean_html(summary_raw)
 
-    if len(summary_clean) > 350:
-        summary_clean = summary_clean[:350] + "..."
+    # اجازه دادن به متن‌های کامل‌تر (تا ۸۰۰ کاراکتر)
+    if len(summary_clean) > 800:
+        summary_clean = summary_clean[:800] + "..."
 
-    # ترجمه به فارسی
+    # ترجمه عنوان و متن به فارسی
     try:
         title_fa = translator.translate(title_en)
         summary_fa = translator.translate(summary_clean) if summary_clean and summary_clean != title_en else title_fa
@@ -85,23 +84,22 @@ for idx, entry in enumerate(entries_to_process[:10], 1):
         title_fa = title_en
         summary_fa = summary_clean
 
-    # فرمت کاملاً تمیز (بدون لینک و بدون منبع)
-    message = f"📊 **خبر فارکس ({idx}/10)**\n\n📌 **عنوان خبر:**\n{title_fa}\n\n📝 **خلاصه خبر:**\n{summary_fa}"
+    # ساخت متن فارسی متنی و کامل بدون عکس، لینک و منبع
+    message = f"📊 **خبر فارکس ({idx}/10)**\n\n📌 **عنوان:**\n{title_fa}\n\n📝 **متن خبر:**\n{summary_fa}"
 
-    telegram_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+    telegram_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
-        "photo": image_url,
-        "caption": message,
+        "text": message,
         "parse_mode": "Markdown"
     }
 
     res = requests.post(telegram_url, data=payload)
     
-    # اگر تلگرام با مارک‌داون مشکل داشت، بدون مارک‌داون بفرست
+    # ارسال بدون مارک‌داون در صورت بروز خطای تلگرام
     if res.status_code != 200:
         payload.pop("parse_mode", None)
         requests.post(telegram_url, data=payload)
 
-    print(f"خبر شماره {idx} با موفقیت ارسال شد.")
-    time.sleep(2) # وقفه ۲ ثانیه‌ای برای اسپم نشدن تلگرام
+    print(f"خبر شماره {idx} ارسال شد.")
+    time.sleep(2) # وقفه ۲ ثانیه‌ای بین ارسال‌ها
