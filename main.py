@@ -1,22 +1,22 @@
 import os
-import re
 import time
 import requests
 import feedparser
 from bs4 import BeautifulSoup
-from deep_translator import GoogleTranslator
 
+# دریافت متغیرهای محیطی از گیت‌هاب
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-    raise ValueError("کلیدهای تلگرام ست نشده‌اند!")
+if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not GROQ_API_KEY:
+    raise ValueError("کلیدهای TELEGRAM_TOKEN، TELEGRAM_CHAT_ID یا GROQ_API_KEY تنظیم نشده‌اند!")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# معتبرترین منابع خبری زنده فارکس در دنیا
+# منابع اصلی اخبار زنده جهان
 ENGLISH_RSS_SOURCES = [
     "https://www.forexlive.com/feed/news",
     "https://www.dailyfx.com/feeds/forex-market-news",
@@ -46,7 +46,6 @@ def get_full_text(entry):
 
     text = clean_html(raw_content)
 
-    # اگر متن خیلی کوتاه بود، کل پاراگراف‌های صفحه خبر را استخراج کن
     if (text.endswith("...") or text.endswith("…") or len(text) < 180) and hasattr(entry, 'link'):
         try:
             res = requests.get(entry.link, headers=HEADERS, timeout=6, allow_redirects=True)
@@ -61,36 +60,57 @@ def get_full_text(entry):
 
     return text.rstrip(".… ")
 
-translator = GoogleTranslator(source='auto', target='fa')
+# خلاصه سازی و روان‌سازی خبر توسط Groq API
+def summarize_and_translate_with_groq(title, content):
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json"
+    }
 
-# ترجمه جمله‌به‌جمله جهت جلوگیری از ناقص ماندن جملات
-def translate_sentence_by_sentence(text_en):
-    # تفکیک متن انگلیسی بر اساس نقطه و علامت سوال (جملات کامل)
-    sentences = re.split(r'(?<=[.!?])\s+', text_en)
-    translated_sentences = []
-    
-    for sent in sentences:
-        sent = sent.strip()
-        if len(sent) < 12: # حذف کلمات کوتاه یا تبلیغاتی
-            continue
-        try:
-            translated = translator.translate(sent)
-            if translated and not translated.endswith("..."):
-                translated_sentences.append(translated)
-        except Exception as e:
-            print("خطا در ترجمه جمله:", e)
+    prompt = f"""
+تو یک تحلیل‌گر و خبرنگار ارشد بازار فارکس هستی.
+خبر انگلیسی زیر را بخوان و آن را به یک گزارش خبری بسیار خلاصه، روان، شکیل و جذاب به زبان فارسی تبدیل کن.
 
-    full_persian = " ".join(translated_sentences)
-    
-    # اضافه کردن نقطه پایان در صورتی که نباشد
-    if full_persian and not full_persian.endswith((".", "!", "؟")):
-        full_persian += "."
-        
-    return full_persian
+عنوان خبر: {title}
+متن خبر: {content}
+
+قوانین بسیار مهم:
+۱. متن باید خلاصه، جذاب، کاملاً روان و به سبک خبرنگاری حرفه‌ای فارسی باشد (نه ترجمه کلمه‌به‌کلمه).
+۲. تمام جملات باید کامل باشند و با نقطه تمام شوند.
+۳. به هیچ عنوان و تحت هیچ شرایطی اسم منبع، نام سایت، لینک یا نام خبرگزاری را در متن قرار نده.
+۴. خروجی فقط و فقط به فرمت زیر باشد:
+
+📌 **عنوان:**
+[عنوان جذاب فارسی]
+
+📝 **خلاصه خبر:**
+[متن خلاصه و جذاب فارسی]
+"""
+
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.4
+    }
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=20)
+        if res.status_code == 200:
+            result = res.json()
+            return result["choices"][0]["message"]["content"].strip()
+        else:
+            print(f"خطای Groq API: {res.text}")
+    except Exception as e:
+        print(f"استثنا در ارتباط با Groq: {e}")
+
+    return None
 
 entries_to_process = []
 
-# جمع‌آوری ۱۰ خبر برتر انگلیسی
+# جمع‌آوری ۱۰ خبر برتر
 for url in ENGLISH_RSS_SOURCES:
     try:
         res = requests.get(url, headers=HEADERS, timeout=10)
@@ -105,32 +125,25 @@ for url in ENGLISH_RSS_SOURCES:
                 if len(entries_to_process) >= 10:
                     break
     except Exception as e:
-        print(f"خطا در دریافت خبر از {url}: {e}")
+        print(f"خطا در دریافت از {url}: {e}")
 
     if len(entries_to_process) >= 10:
         break
 
-print(f"تعداد {len(entries_to_process)} خبر برتر انگلیسی پیدا شد.")
+print(f"تعداد {len(entries_to_process)} خبر برتر پیدا شد.")
 
-# ترجمه و ارسال اخبار به تلگرام
+# پردازش با Groq و ارسال به تلگرام
 for idx, entry in enumerate(entries_to_process[:10], 1):
     title_en = entry.title
     full_text_en = get_full_text(entry)
 
-    # ترجمه عنوان
-    try:
-        title_fa = translator.translate(title_en)
-    except:
-        title_fa = title_en
+    persian_news = summarize_and_translate_with_groq(title_en, full_text_en)
 
-    # ترجمه متن به صورت جمله‌به‌جمله و کامل
-    summary_fa = translate_sentence_by_sentence(full_text_en)
+    if not persian_news:
+        print(f"خبر {idx} پردازش نشد، رفتن به بعدی...")
+        continue
 
-    if not summary_fa:
-        summary_fa = title_fa
-
-    # ساخت قالب نهایی متنی
-    message = f"📊 **خبر فارکس ({idx}/10)**\n\n📌 **عنوان:**\n{title_fa}\n\n📝 **متن خبر:**\n{summary_fa}"
+    message = f"📊 **خبر فارکس ({idx}/10)**\n\n{persian_news}"
 
     telegram_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
