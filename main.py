@@ -4,14 +4,13 @@ import time
 import requests
 import feedparser
 from bs4 import BeautifulSoup
-from deep_translator import GoogleTranslator
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
 
 if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID or not GROQ_API_KEY:
-    raise ValueError("کلیدهای TELEGRAM_TOKEN، TELEGRAM_CHAT_ID یا GROQ_API_KEY در گیت‌هاب تنظیم نشده‌اند!")
+    raise ValueError("کلیدهای TELEGRAM_TOKEN، TELEGRAM_CHAT_ID یا GROQ_API_KEY تنظیم نشده‌اند!")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -30,8 +29,8 @@ IGNORE_KEYWORDS = [
 
 GROQ_MODELS = [
     "openai/gpt-oss-120b",
+    "llama-3.3-70b-versatile",
     "llama-3.1-8b-instant",
-    "llama3-8b-8192",
     "mixtral-8x7b-32768"
 ]
 
@@ -41,7 +40,7 @@ def clean_html(raw_html):
     soup = BeautifulSoup(raw_html, "html.parser")
     return soup.get_text(separator=" ").strip()
 
-# فیلتر اختصاصی جهت حذف ۱۰۰٪ نام منابع، خبرگزاری‌ها و لینک‌ها
+# پاک‌سازی خودکار هرگونه نام منبع یا لینک
 def clean_sources(text):
     if not text:
         return ""
@@ -55,33 +54,58 @@ def clean_sources(text):
         text = re.sub(pattern, '', text, flags=re.IGNORECASE)
     return text.strip()
 
-# خلاصه‌سازی فوق‌العاده کوتاه و روان با Groq
-def summarize_and_translate_with_groq(title, content):
+def get_full_text(entry):
+    raw_content = ""
+    if hasattr(entry, 'content') and len(entry.content) > 0:
+        raw_content = entry.content[0].value
+    elif hasattr(entry, 'summary'):
+        raw_content = entry.summary
+    elif hasattr(entry, 'description'):
+        raw_content = entry.description
+
+    text = clean_html(raw_content)
+
+    if (text.endswith("...") or text.endswith("…") or len(text) < 200) and hasattr(entry, 'link'):
+        try:
+            res = requests.get(entry.link, headers=HEADERS, timeout=6, allow_redirects=True)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.content, "html.parser")
+                paragraphs = soup.find_all("p")
+                p_texts = [p.get_text().strip() for p in paragraphs if len(p.get_text().strip()) > 35]
+                if p_texts:
+                    text = " ".join(p_texts[:4])
+        except Exception as e:
+            pass
+
+    return text.rstrip(".… ")
+
+# بازنویسی در حد یک پاراگراف روان توسط هوش مصنوعی
+def generate_one_paragraph_news_with_groq(title, content):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {GROQ_API_KEY}",
         "Content-Type": "application/json"
     }
 
-    short_content = content[:350]
-
     prompt = f"""
-خبر فارکس زیر را بخوان و آن را به یک گزارش بسیار کوتاه، فشرده و جذاب به زبان فارسی تبدیل کن.
+تو یک خبرنگار و تحلیل‌گر ارشد بازار فارکس هستی.
+خبر انگلیسی زیر را بخوان و آن را به یک گزارش خبر بسیار روان، شکیل و «دقیقاً در حد یک پاراگراف کامل» به زبان فارسی بازنویسی کن.
 
-عنوان: {title}
-متن: {short_content}
+عنوان خبر: {title}
+متن خبر: {content}
 
 دستورالعمل‌های حیاتی:
-۱. متن خلاصه باید فوق‌العاده کوتاه باشد (حداکثر ۲ الی ۳ جمله کوتاه). کل متن نباید از ۴۰ کلمه بیشتر شود!
-۲. هیچ‌گونه اسم منبع، خبرگزاری، وب‌سایت، لینک یا نام برند در خروجی نباشد.
-۳. ادبیات خبر کاملاً روان، جذاب و فارسی باشد.
+۱. متن گزارش باید «دقیقاً در حد یک پاراگراف روان و جامع» باشد (حدود ۵۰ الی ۷۰ کلمه، نه خیلی کوتاه و نه خیلی طولانی).
+۲. نگارش باید کاملاً جذاب و به سبک خبرنگاری حرفه‌ای فارسی باشد (اصلاً ترجمه ماشینی نباشد).
+۳. تمام جملات باید کامل بوده و با نقطه تمام شوند.
+۴. تحت هیچ شرایطی نام منبع، نام سایت، نام خبرگزاری، لینک یا نام برند را در خروجی قرار نده.
 
 فرمت خروجی (دقیقاً به این شکل):
 📌 **عنوان:**
-[عنوان کوتاه فارسی]
+[عنوان جذاب و حرفه‌ای فارسی]
 
-📝 **خلاصه:**
-[۲ جمله بسیار کوتاه و مفید]
+📝 **خلاصه خبر:**
+[یک پاراگراف کامل، روان و جذاب فارسی]
 """
 
     for model_name in GROQ_MODELS:
@@ -90,12 +114,12 @@ def summarize_and_translate_with_groq(title, content):
             "messages": [
                 {"role": "user", "content": prompt}
             ],
-            "temperature": 0.3,
-            "max_tokens": 200 # سقف سخت‌گیرانه برای کوتاه ماندن خروجی
+            "temperature": 0.4,
+            "max_tokens": 350 # اندازه ایده‌آل برای دقیقاً ۱ پاراگراف
         }
 
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=12)
+            res = requests.post(url, headers=headers, json=payload, timeout=15)
             if res.status_code == 200:
                 result = res.json()
                 output = result["choices"][0]["message"]["content"].strip()
@@ -105,15 +129,7 @@ def summarize_and_translate_with_groq(title, content):
         except Exception as e:
             print(f"خطا در مدل {model_name}: {e}")
 
-    # سیستم پشتیبان در صورت خطای Groq
-    translator = GoogleTranslator(source='auto', target='fa')
-    try:
-        title_fa = translator.translate(title)
-        summary_fa = translator.translate(short_content[:200])
-        fallback_text = f"📌 **عنوان:**\n{title_fa}\n\n📝 **خلاصه:**\n{summary_fa}"
-        return clean_sources(fallback_text)
-    except:
-        return None
+    return None
 
 entries_to_process = []
 
@@ -142,10 +158,9 @@ print(f"تعداد {len(entries_to_process)} خبر برتر پیدا شد.")
 # پردازش و ارسال به تلگرام
 for idx, entry in enumerate(entries_to_process[:10], 1):
     title_en = entry.title
-    raw_summary = getattr(entry, 'summary', title_en)
-    clean_summary = clean_html(raw_summary)
+    full_text_en = get_full_text(entry)
 
-    persian_news = summarize_and_translate_with_groq(title_en, clean_summary)
+    persian_news = generate_one_paragraph_news_with_groq(title_en, full_text_en)
 
     if not persian_news:
         print(f"خبر {idx} پردازش نشد...")
